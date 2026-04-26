@@ -275,8 +275,8 @@ def detect_conflict(resource_id: str, start: datetime, end: datetime,
     maints = database.get_maintenance()
     for m in maints:
         if str(m.get("resource_id")) == str(resource_id):
-            m_start = _naive(m.get("start_time")) if isinstance(m.get("start_time"), datetime) else datetime.fromisoformat(m.get("start_time"))
-            m_end = _naive(m.get("end_time")) if isinstance(m.get("end_time"), datetime) else datetime.fromisoformat(m.get("end_time"))
+            m_start = _naive(m.get("start_time")) if isinstance(m.get("start_time"), datetime) else _naive(datetime.fromisoformat(m.get("start_time")))
+            m_end = _naive(m.get("end_time")) if isinstance(m.get("end_time"), datetime) else _naive(datetime.fromisoformat(m.get("end_time")))
             # Add buffer to maintenance end time
             m_end_with_buffer = m_end + timedelta(minutes=BUFFER_MINUTES)
             if m_start < e and m_end_with_buffer > s:
@@ -1397,6 +1397,7 @@ async def execute_ai_function(function_name: str, function_args: dict, user_id: 
         elif function_name == "get_my_bookings":
             bookings = database.get_bookings({"user_id": user_id})
             return {
+                "success": True,
                 "bookings": [
                     {
                         "id": b.get("id"),
@@ -1435,6 +1436,7 @@ async def execute_ai_function(function_name: str, function_args: dict, user_id: 
             
             bookings = database.get_bookings({"status": "pending"})
             return {
+                "success": True,
                 "pending_approvals": [
                     {
                         "id": b.get("id"),
@@ -1518,6 +1520,7 @@ async def execute_ai_function(function_name: str, function_args: dict, user_id: 
             active_res = database.count_resources({"active": True})
             
             return {
+                "success": True,
                 "total_bookings": total,
                 "pending_approvals": pending,
                 "active_resources": active_res,
@@ -1629,7 +1632,8 @@ ACTION: create_booking
   "attendees": 6,
   "purpose": "Team meeting"
 }
-Note: Always use IST timezone offset +05:30 in datetime strings. Check availability first, then create booking if available.
+Note: Always use IST timezone offset +05:30 in datetime strings. When the user explicitly requests a room booking or reservation and has provided sufficient details, perform the booking immediately.
+Do not stop at a recommendation if the request is clear; create the booking when possible, or ask only for missing scheduling details.
 
 ACTION: get_my_bookings
 {
@@ -1694,6 +1698,16 @@ ACTION: get_analytics_summary
         f"Timezone: IST (Indian Standard Time, UTC+5:30)\n\n"
         "== RESOURCE CATALOGUE ==\n" + res_lines + "\n\n"
         + actions_desc + "\n\n"
+        "== RESPONSE FORMAT ==\n"
+        "- Use a formal, professional tone in all assistant replies.\n"
+        "- Avoid slang, emojis, and casual phrasing.\n"
+        "- Prefer full sentences, clear structure, and concise paragraphs.\n"
+        "- Use headings, bullet points, or numbered lists when presenting results.\n"
+        "- If an action is required, include exactly one JSON object with the action details.\n"
+        "- Place action JSON after a brief formal summary when possible.\n"
+        "- Example format:\n"
+        "  Response: <formal summary>\n"
+        "  {\"action\": \"...\", ...}\n\n"
         "== WORKFLOW ==\n"
         "1. PARSE USER CONSTRAINTS from their message:\n"
         "   - Room/resource name (e.g., 'chess lounge', 'boardroom')\n"
@@ -1716,6 +1730,7 @@ ACTION: get_analytics_summary
         "     Use check_availability to check that specific time\n"
         "   - If slot is not available, suggest alternative times from the response\n\n"
         "4. CREATE BOOKINGS:\n"
+        "   - When the user explicitly requests a booking or reservation, perform the booking action whenever enough details are available.\n"
         "   - Always check availability first\n"
         "   - If available, create the booking\n"
         "   - If not available, suggest alternatives and ask user to choose\n\n"
@@ -1740,7 +1755,7 @@ ACTION: get_analytics_summary
         "IMPORTANT: When you want to perform an action, include the JSON in your response.\n"
         "You can include both conversational text AND action JSON.\n"
         "Example: 'Let me search for that room. {\"action\": \"search_resources\", \"search\": \"chess lounge\"}'\n\n"
-        "Be helpful, conversational, and proactive!"
+        "Be helpful, formal, and professional."
     )
 
     try:
@@ -1775,6 +1790,7 @@ ACTION: get_analytics_summary
         
         # Check if response contains action JSON
         action_result = None
+        action_name = None
         if "{" in resp_text and "\"action\":" in resp_text:
             try:
                 # Extract JSON from response
@@ -1797,36 +1813,38 @@ ACTION: get_analytics_summary
                         if action_name == "search_resources":
                             resources = action_result.get("resources", [])
                             if resources:
-                                resp_text += f"\n\n🔍 Found {len(resources)} resource(s):\n"
+                                resp_text += f"\nFound {len(resources)} resource(s):"
                                 for r in resources[:5]:
-                                    resp_text += f"- {r['name']} (ID: {r['id']}) - {r['type']} - Capacity: {r['capacity']}\n"
+                                    resp_text += f"\n- {r['name']} (ID: {r['id']}) | Type: {r['type']} | Capacity: {r['capacity']}"
                             else:
-                                resp_text += "\n\n❌ No resources found matching your search."
+                                resp_text += "\nNo resources found matching your search."
                         elif action_name == "get_resource_details":
                             resource = action_result.get("resource", {})
-                            resp_text += f"\n\n📋 Resource Details:\n"
-                            resp_text += f"- Name: {resource.get('name')}\n"
-                            resp_text += f"- Type: {resource.get('type')}\n"
-                            resp_text += f"- Capacity: {resource.get('capacity')}\n"
-                            resp_text += f"- Location: {resource.get('location')}\n"
-                            resp_text += f"- Hours: {resource.get('avail_start')}:00 - {resource.get('avail_end')}:00\n"
-                            resp_text += f"- Amenities: {resource.get('amenities')}\n"
+                            resp_text += f"\nResource Details:"
+                            resp_text += f"\nName: {resource.get('name')}"
+                            resp_text += f"\nType: {resource.get('type')}"
+                            resp_text += f"\nCapacity: {resource.get('capacity')}"
+                            resp_text += f"\nLocation: {resource.get('location')}"
+                            resp_text += f"\nHours: {resource.get('avail_start')}:00 - {resource.get('avail_end')}:00"
+                            resp_text += f"\nAmenities: {resource.get('amenities')}"
                         elif action_name == "create_booking":
-                            resp_text += f"\n\n✅ Booking created successfully! Booking ID: {action_result.get('booking_id')}. Status: {action_result.get('status')}."
+                            resp_text += f"\nBooking created successfully."
+                            resp_text += f"\nBooking ID: {action_result.get('booking_id')}"
+                            resp_text += f"\nStatus: {action_result.get('status')}"
                         elif action_name == "check_availability":
                             if action_result.get("available"):
-                                resp_text += f"\n\n✅ The {action_result.get('resource_name')} is available!"
-                                resp_text += f"\n   Time: {action_result.get('requested_start')} to {action_result.get('requested_end')}"
+                                resp_text += f"\nThe {action_result.get('resource_name')} is available."
+                                resp_text += f"\nTime: {action_result.get('requested_start')} to {action_result.get('requested_end')}"
                             else:
-                                resp_text += f"\n\n❌ Not available: {action_result.get('reason')}"
+                                resp_text += f"\nNot available: {action_result.get('reason')}"
                                 
                                 # Show alternative slots if available
                                 alt_slots = action_result.get("alternative_slots", [])
                                 if alt_slots:
-                                    resp_text += f"\n\n📅 Alternative time slots available on the same day:\n"
+                                    resp_text += f"\nAlternative time slots available:"
                                     for i, slot in enumerate(alt_slots[:5], 1):
-                                        resp_text += f"   {i}. {slot['start_time']} - {slot['end_time']}\n"
-                                    resp_text += "\nWould you like to book one of these times instead?"
+                                        resp_text += f"\n{i}. {slot['start_time']} - {slot['end_time']}"
+                                    resp_text += "\n\nWould you like to book one of these times instead?"
                         elif action_name == "get_available_slots":
                             slots = action_result.get("available_slots", [])
                             resource_name = action_result.get("resource_name")
@@ -1835,47 +1853,51 @@ ACTION: get_analytics_summary
                             time_range = action_result.get("time_range", "")
                             
                             if slots:
-                                resp_text += f"\n\n📅 Available time slots for {resource_name} on {date}{time_range}:\n"
-                                resp_text += f"   (Duration: {duration} minutes each)\n\n"
+                                resp_text += f"\nAvailable time slots for {resource_name} on {date}{time_range}"
+                                resp_text += f"\nDuration: {duration} minutes each\n"
                                 for i, slot in enumerate(slots[:10], 1):
-                                    resp_text += f"   {i}. {slot['start_time']} - {slot['end_time']}\n"
+                                    resp_text += f"{i}. {slot['start_time']} - {slot['end_time']}\n"
                                 
                                 if len(slots) > 10:
-                                    resp_text += f"\n   ... and {len(slots) - 10} more slots available"
+                                    resp_text += f"... and {len(slots) - 10} more slots available"
                                 
-                                resp_text += f"\n\nTotal: {len(slots)} available slots"
+                                resp_text += f"\nTotal: {len(slots)} available slots"
                                 resp_text += f"\nBusiness hours: {action_result.get('business_hours')}"
                             else:
-                                resp_text += f"\n\n❌ No available slots found for {resource_name} on {date}{time_range}"
-                                resp_text += f"\n   Business hours: {action_result.get('business_hours')}"
+                                resp_text += f"\nNo available slots found for {resource_name} on {date}{time_range}"
+                                resp_text += f"\nBusiness hours: {action_result.get('business_hours')}"
                         elif action_name == "cancel_booking":
-                            resp_text += "\n\n✅ Booking cancelled successfully!"
+                            resp_text += "\nBooking cancelled successfully."
                         elif action_name == "approve_booking":
-                            resp_text += "\n\n✅ Booking approved!"
+                            resp_text += "\nBooking approved."
                         elif action_name == "reject_booking":
-                            resp_text += "\n\n✅ Booking rejected!"
+                            resp_text += "\nBooking rejected."
                         elif action_name == "schedule_maintenance":
-                            resp_text += f"\n\n✅ Maintenance scheduled! ID: {action_result.get('maintenance_id')}"
+                            resp_text += f"\nMaintenance scheduled."
+                            resp_text += f"\nMaintenance ID: {action_result.get('maintenance_id')}"
                         elif action_name == "get_my_bookings":
                             bookings = action_result.get("bookings", [])
                             if bookings:
-                                resp_text += f"\n\nYou have {len(bookings)} booking(s):\n"
+                                resp_text += f"\nYou have {len(bookings)} booking(s):"
                                 for b in bookings[:5]:
-                                    resp_text += f"- {b['resource_name']}: {b['start_time']} ({b['status']})\n"
+                                    resp_text += f"\n- {b['resource_name']}: {b['start_time']} ({b['status']})"
                             else:
-                                resp_text += "\n\nYou have no bookings."
+                                resp_text += "\nYou have no bookings."
                         elif action_name == "get_pending_approvals":
                             approvals = action_result.get("pending_approvals", [])
                             if approvals:
-                                resp_text += f"\n\nThere are {len(approvals)} pending approval(s):\n"
+                                resp_text += f"\nPending approvals: {len(approvals)}"
                                 for a in approvals[:5]:
-                                    resp_text += f"- {a['user_name']} - {a['resource_name']}: {a['start_time']} (ID: {a['id']})\n"
+                                    resp_text += f"\n- {a['user_name']} - {a['resource_name']}: {a['start_time']} (ID: {a['id']})"
                             else:
-                                resp_text += "\n\nNo pending approvals."
+                                resp_text += "\nNo pending approvals."
                         elif action_name == "get_analytics_summary":
-                            resp_text += f"\n\n📊 Analytics:\n- Total bookings: {action_result.get('total_bookings')}\n- Pending approvals: {action_result.get('pending_approvals')}\n- Active resources: {action_result.get('active_resources')}"
+                            resp_text += f"\nAnalytics Summary:"
+                            resp_text += f"\nTotal bookings: {action_result.get('total_bookings')}"
+                            resp_text += f"\nPending approvals: {action_result.get('pending_approvals')}"
+                            resp_text += f"\nActive resources: {action_result.get('active_resources')}"
                     else:
-                        resp_text += f"\n\n❌ Error: {action_result.get('error')}"
+                        resp_text += f"\nError: {action_result.get('error')}"
             except Exception as e:
                 # If JSON parsing fails, just return the text response
                 pass
@@ -1895,7 +1917,13 @@ ACTION: get_analytics_summary
         "timestamp": now_ist()
     })
 
-    return {"session_id": session_id, "reply": resp_text, "role": "assistant"}
+    return {
+        "session_id": session_id,
+        "reply": resp_text,
+        "role": "assistant",
+        "action": action_name,
+        "action_result": action_result,
+    }
 
 
 class ApiKeyValidation(BaseModel):

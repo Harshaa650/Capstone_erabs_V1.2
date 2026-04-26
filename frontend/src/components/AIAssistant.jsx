@@ -100,6 +100,11 @@ export default function AIAssistant({ variant = 'inline', onNavigate }) {
         groq_api_key: apiKey 
       })
       setMessages((m) => [...m, { role: 'assistant', content: res.data.reply || '…' }])
+      if (res.data.action === 'create_booking' && res.data.action_result?.success) {
+        window.dispatchEvent(new CustomEvent('erabs-booking-created', {
+          detail: { bookingId: res.data.action_result.booking_id }
+        }))
+      }
     } catch (err) {
       const reason = err.response?.data?.detail || 'AI is temporarily unavailable.'
       

@@ -46,6 +46,21 @@ export default function EmployeeDashboard() {
     })()
   }, [])
 
+  useEffect(() => {
+    const refreshDashboard = async () => {
+      try {
+        const [s, b] = await Promise.all([analytics.summary(), bookings.list('mine')])
+        setSummary(s.data)
+        setMyBookings(b.data.slice(0, 5))
+      } catch {
+        toast.error('Failed to refresh dashboard after booking')
+      }
+    }
+
+    window.addEventListener('erabs-booking-created', refreshDashboard)
+    return () => window.removeEventListener('erabs-booking-created', refreshDashboard)
+  }, [])
+
   const kpiSlides = useMemo(() => ([
     [
       { title: 'Total bookings', value: summary?.total_bookings || 0, icon: 'bookings' },

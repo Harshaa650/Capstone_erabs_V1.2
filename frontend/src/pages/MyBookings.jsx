@@ -17,6 +17,13 @@ export default function MyBookings() {
 
   useEffect(() => {
     fetchBookings()
+
+    const refreshBookings = () => {
+      fetchBookings()
+    }
+
+    window.addEventListener('erabs-booking-created', refreshBookings)
+    return () => window.removeEventListener('erabs-booking-created', refreshBookings)
   }, [])
 
   const fetchBookings = async () => {
