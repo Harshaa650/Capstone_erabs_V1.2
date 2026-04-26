@@ -83,9 +83,10 @@ export default function RoomDetail() {
   const [loading, setLoading] = useState(true)
   const [galleryIndex, setGalleryIndex] = useState(0)
   const [bookForm, setBookForm] = useState({
-    date: '', start: '', end: '', purpose: '', attendees: 1,
+    date: '', start: '', end: '', purpose: '', attendees: '',
   })
   const [bookingLoading, setBookingLoading] = useState(false)
+  const [timeConflictState, setTimeConflictState] = useState(null)
   const [sceneFullscreen, setSceneFullscreen] = useState(false)
 
   useEffect(() => {
@@ -105,6 +106,51 @@ export default function RoomDetail() {
       }
     })()
   }, [id])
+
+  useEffect(() => {
+    if (!id || !bookForm.date || !bookForm.start || !bookForm.end) {
+      setTimeConflictState(null)
+      return
+    }
+
+    const startDateTime = toLocalDateTime(bookForm.date, bookForm.start)
+    const endDateTime = toLocalDateTime(bookForm.date, bookForm.end)
+    if (startDateTime >= endDateTime) {
+      setTimeConflictState(null)
+      return
+    }
+
+    const timer = setTimeout(async () => {
+      try {
+        const attendeesCount = Math.max(1, Number(bookForm.attendees) || 1)
+        const { data } = await bookings.validate({
+          resource_id: id,
+          start_time: toISTISO(bookForm.date, bookForm.start),
+          end_time: toISTISO(bookForm.date, bookForm.end),
+          attendees: attendeesCount,
+          purpose: bookForm.purpose || '',
+        })
+
+        if (data?.ok) {
+          setTimeConflictState(null)
+          return
+        }
+
+        const reason = String(data?.reason || '').toLowerCase()
+        if (reason.includes('booking rejected')) {
+          setTimeConflictState('meeting')
+        } else if (reason.includes('buffer time')) {
+          setTimeConflictState('buffer')
+        } else {
+          setTimeConflictState(null)
+        }
+      } catch {
+        setTimeConflictState(null)
+      }
+    }, 300)
+
+    return () => clearTimeout(timer)
+  }, [id, bookForm.date, bookForm.start, bookForm.end, bookForm.attendees, bookForm.purpose])
 
   const handleBook = async () => {
     if (!bookForm.date || !bookForm.start || !bookForm.end) {
@@ -138,6 +184,12 @@ export default function RoomDetail() {
       return
     }
 
+    const attendeesCount = Number(bookForm.attendees)
+    if (!Number.isFinite(attendeesCount) || attendeesCount < 1) {
+      toast.error('Please enter at least 1 attendee')
+      return
+    }
+
     setBookingLoading(true)
     try {
       const payload = {
@@ -145,13 +197,20 @@ export default function RoomDetail() {
         start_time: toISTISO(bookForm.date, bookForm.start),
         end_time: toISTISO(bookForm.date, bookForm.end),
         purpose: bookForm.purpose,
-        attendees: bookForm.attendees,
+        attendees: attendeesCount,
       }
       await bookings.create(payload)
       toast.success('Booking created successfully!')
-      setBookForm({ date: '', start: '', end: '', purpose: '', attendees: 1 })
+      setBookForm({ date: '', start: '', end: '', purpose: '', attendees: '' })
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Booking failed')
+      const detail = String(err?.response?.data?.detail || '').toLowerCase()
+      if (detail.includes('buffer time')) {
+        toast.error('This slot is in buffer time. Please try booking after 5 minutes.')
+      } else if (detail.includes('booking rejected') || detail.includes('already booked') || detail.includes('capacity exceeded')) {
+        toast.error('Booking rejected')
+      } else {
+        toast.error(err.response?.data?.detail || 'Booking failed')
+      }
     } finally {
       setBookingLoading(false)
     }
@@ -207,6 +266,9 @@ export default function RoomDetail() {
       end: prev.end && prev.end <= start ? '' : prev.end,
     }))
   }
+
+  const attendeesExceedsCapacity = Number(bookForm.attendees) > Number(resource?.capacity || 0)
+  const isMeetingTimeConflict = timeConflictState === 'meeting'
 
   return (
     <Shell>
@@ -410,7 +472,11 @@ export default function RoomDetail() {
                     min={minStartTime}
                     max="19:59"
                     onChange={(e) => handleStartChange(e.target.value)}
-                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 [color-scheme:dark] transition-all hover:border-brand-500/50"
+                    className={`w-full bg-white/5 border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 [color-scheme:dark] transition-all ${
+                      isMeetingTimeConflict
+                        ? 'border-red-500 text-red-400 focus:border-red-500 focus:ring-red-500/20'
+                        : 'border-white/10 text-white focus:border-brand-500 focus:ring-brand-500/20 hover:border-brand-500/50'
+                    }`}
                   />
                 </div>
                 <div>
@@ -422,10 +488,17 @@ export default function RoomDetail() {
                     min={minEndTime}
                     max={BIZ_END}
                     onChange={(e) => setBookForm({ ...bookForm, end: e.target.value })}
-                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 [color-scheme:dark] transition-all hover:border-brand-500/50"
+                    className={`w-full bg-white/5 border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 [color-scheme:dark] transition-all ${
+                      isMeetingTimeConflict
+                        ? 'border-red-500 text-red-400 focus:border-red-500 focus:ring-red-500/20'
+                        : 'border-white/10 text-white focus:border-brand-500 focus:ring-brand-500/20 hover:border-brand-500/50'
+                    }`}
                   />
                 </div>
               </div>
+              {isMeetingTimeConflict && (
+                <p className="text-[10px] text-red-400 -mt-1">Booking rejected: this room is already occupied during this time.</p>
+              )}
               <p className="text-[10px] text-gray-500 -mt-1">Available hours: 08:00 AM – 08:00 PM</p>
               <div className="grid grid-cols-3 gap-2">
                 <div>
@@ -436,10 +509,14 @@ export default function RoomDetail() {
                     min="1"
                     max={resource.capacity}
                     value={bookForm.attendees}
-                    onChange={(e) => setBookForm({ ...bookForm, attendees: parseInt(e.target.value) || 1 })}
+                    onChange={(e) => setBookForm({ ...bookForm, attendees: e.target.value })}
                     placeholder="#"
                     title={`Attendees (max ${resource.capacity})`}
-                    className="w-full bg-white/5 border border-white/10 rounded-lg px-2.5 py-2.5 text-white text-sm focus:outline-none focus:border-brand-500"
+                    className={`w-full bg-white/5 border rounded-lg px-2.5 py-2.5 text-sm focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${
+                      attendeesExceedsCapacity
+                        ? 'border-red-500 text-red-400 focus:border-red-500'
+                        : 'border-white/10 text-white focus:border-brand-500'
+                    }`}
                   />
                 </div>
                 <div className="col-span-2">

@@ -285,8 +285,10 @@ def detect_conflict(resource_id: str, start: datetime, end: datetime,
     # Check bookings with proper overlap detection
     bks = database.get_bookings({"resource_id": resource_id})
     overlaps = []
+    overlaps_during_meeting = False
+    overlaps_buffer_only = False
     for bk in bks:
-        if bk.get("status") not in (["pending", "approved"]):
+        if bk.get("status") not in ("pending", "approved"):
             continue
         if exclude_id and str(bk.get("id")) == str(exclude_id):
             continue
@@ -310,19 +312,31 @@ def detect_conflict(resource_id: str, start: datetime, end: datetime,
         # - New booking ends after existing starts
         if s < bk_end_with_buffer and e > bk_start:
             overlaps.append(bk)
+            if s < bk_end:
+                overlaps_during_meeting = True
+            else:
+                overlaps_buffer_only = True
     
     capacity = res.get("capacity", 1)
-    if capacity > 1:
+    resource_type = str(res.get("type") or "").lower()
+    if overlaps:
+        # Rooms are exclusive resources: any overlap is a conflict regardless of seat capacity.
+        if resource_type == "room":
+            if overlaps_during_meeting:
+                return "Booking rejected"
+
+            next_available = overlaps[0].get("end_time")
+            if isinstance(next_available, str):
+                next_available = datetime.fromisoformat(next_available)
+            next_available = _naive(next_available) + timedelta(minutes=BUFFER_MINUTES)
+            if overlaps_buffer_only:
+                return f"This slot is in buffer time. Please try booking after 5 minutes. (available from {next_available.strftime('%I:%M %p')})"
+
+            return f"Time slot already booked (available from {next_available.strftime('%I:%M %p')})"
+
         used = sum(bk.get("attendees", 1) for bk in overlaps)
         if used + attendees > capacity:
             return f"Capacity exceeded ({used}/{capacity} used)"
-    elif overlaps:
-        # Show when the slot becomes available (after buffer)
-        next_available = overlaps[0].get("end_time")
-        if isinstance(next_available, str):
-            next_available = datetime.fromisoformat(next_available)
-        next_available = _naive(next_available) + timedelta(minutes=BUFFER_MINUTES)
-        return f"Time slot already booked (available from {next_available.strftime('%I:%M %p')})"
     
     return None
 
