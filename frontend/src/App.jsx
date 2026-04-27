@@ -12,6 +12,7 @@ import Approvals from './pages/Approvals'
 import Settings from './pages/Settings'
 import Analytics from './pages/Analytics'
 import AssistantPage from './pages/AssistantPage'
+import AuditLogs from './pages/AuditLogs'
 
 function PrivateRoute({ children, requiredRoles = [] }) {
   const { user, loading } = useAuth()
@@ -39,6 +40,7 @@ function AppRoutes() {
       <Route path="/resources" element={<PrivateRoute><Resources /></PrivateRoute>} />
       <Route path="/resources/:id" element={<PrivateRoute><RoomDetail /></PrivateRoute>} />
       <Route path="/bookings" element={<PrivateRoute><MyBookings /></PrivateRoute>} />
+      <Route path="/audit" element={<PrivateRoute><AuditLogs /></PrivateRoute>} />
       <Route path="/analytics" element={<PrivateRoute><Analytics /></PrivateRoute>} />
       <Route path="/assistant" element={<PrivateRoute><AssistantPage /></PrivateRoute>} />
       <Route path="/approvals" element={<PrivateRoute requiredRoles={['manager', 'admin']}><Approvals /></PrivateRoute>} />

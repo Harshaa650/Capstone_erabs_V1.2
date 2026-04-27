@@ -235,6 +235,8 @@ def serialize_booking(b: Dict) -> dict:
         "approver_comment": b.get("approver_comment"),
         "created_at": b.get("created_at"),
         "user_name": b.get("user_name"),
+        "user_department": b.get("user_department"),
+        "user_manager_id": b.get("user_manager_id"),
         "resource_name": b.get("resource_name"),
         "resource_image_url": b.get("resource_image_url"),
         "resource_scene_type": b.get("resource_scene_type"),
@@ -243,7 +245,8 @@ def serialize_booking(b: Dict) -> dict:
 
 
 def detect_conflict(resource_id: str, start: datetime, end: datetime,
-                    attendees: int, exclude_id: Optional[str] = None) -> Optional[str]:
+                    attendees: int, exclude_id: Optional[str] = None, 
+                    check_pending: bool = True) -> Optional[str]:
     res = database.get_resource_by_id(resource_id)
     if not res or not res.get("active"):
         return "Resource not available"
@@ -275,8 +278,13 @@ def detect_conflict(resource_id: str, start: datetime, end: datetime,
     maints = database.get_maintenance()
     for m in maints:
         if str(m.get("resource_id")) == str(resource_id):
-            m_start = _naive(m.get("start_time")) if isinstance(m.get("start_time"), datetime) else datetime.fromisoformat(m.get("start_time"))
-            m_end = _naive(m.get("end_time")) if isinstance(m.get("end_time"), datetime) else datetime.fromisoformat(m.get("end_time"))
+            m_s_raw = m.get("start_time")
+            if not isinstance(m_s_raw, datetime): m_s_raw = datetime.fromisoformat(m_s_raw)
+            m_start = _naive(m_s_raw)
+            
+            m_e_raw = m.get("end_time")
+            if not isinstance(m_e_raw, datetime): m_e_raw = datetime.fromisoformat(m_e_raw)
+            m_end = _naive(m_e_raw)
             # Add buffer to maintenance end time
             m_end_with_buffer = m_end + timedelta(minutes=BUFFER_MINUTES)
             if m_start < e and m_end_with_buffer > s:
@@ -284,9 +292,19 @@ def detect_conflict(resource_id: str, start: datetime, end: datetime,
 
     # Check bookings with proper overlap detection
     bks = database.get_bookings({"resource_id": resource_id})
+    
+    # Shared resources (parking, etc.): allow concurrent bookings up to capacity
+    # Exclusive resources (rooms, cabins, etc.): one booking per time slot
+    is_shared = res.get("type") in ("parking",)
+    
     overlaps = []
     for bk in bks:
-        if bk.get("status") not in (["pending", "approved"]):
+        status = bk.get("status")
+        if status not in (["pending", "approved"]):
+            continue
+        # For EXCLUSIVE resources, skip pending if check_pending=False
+        # For SHARED resources, ALWAYS count both pending+approved for capacity
+        if not is_shared and not check_pending and status == "pending":
             continue
         if exclude_id and str(bk.get("id")) == str(exclude_id):
             continue
@@ -294,35 +312,51 @@ def detect_conflict(resource_id: str, start: datetime, end: datetime,
         bk_start = bk.get("start_time")
         if not isinstance(bk_start, datetime):
             bk_start = datetime.fromisoformat(bk_start)
-        bk_start = _naive(bk_start)  # Make timezone-naive for comparison
+        bk_start = _naive(bk_start)
         
         bk_end = bk.get("end_time")
         if not isinstance(bk_end, datetime):
             bk_end = datetime.fromisoformat(bk_end)
-        bk_end = _naive(bk_end)  # Make timezone-naive for comparison
+        bk_end = _naive(bk_end)
         
-        # Add 5-minute buffer after existing booking
-        bk_end_with_buffer = bk_end + timedelta(minutes=BUFFER_MINUTES)
-        
-        # Check for ANY overlap (including buffer)
-        # Booking overlaps if:
-        # - New booking starts before existing ends (with buffer) AND
-        # - New booking ends after existing starts
-        if s < bk_end_with_buffer and e > bk_start:
-            overlaps.append(bk)
+        # Add 5-minute buffer after existing booking (for exclusive resources only)
+        if is_shared:
+            # Parking: exact time overlap only, no buffer needed
+            if s < bk_end and e > bk_start:
+                overlaps.append(bk)
+        else:
+            bk_end_with_buffer = bk_end + timedelta(minutes=BUFFER_MINUTES)
+            if s < bk_end_with_buffer and e > bk_start:
+                overlaps.append(bk)
     
     capacity = res.get("capacity", 1)
-    if capacity > 1:
-        used = sum(bk.get("attendees", 1) for bk in overlaps)
-        if used + attendees > capacity:
-            return f"Capacity exceeded ({used}/{capacity} used)"
-    elif overlaps:
-        # Show when the slot becomes available (after buffer)
-        next_available = overlaps[0].get("end_time")
-        if isinstance(next_available, str):
-            next_available = datetime.fromisoformat(next_available)
-        next_available = _naive(next_available) + timedelta(minutes=BUFFER_MINUTES)
-        return f"Time slot already booked (available from {next_available.strftime('%I:%M %p')})"
+    if attendees > capacity:
+        return f"Attendees exceed capacity ({capacity})"
+    
+    if overlaps:
+        if is_shared:
+            # Sum attendees from ALL overlapping bookings (pending + approved)
+            total_booked = sum(bk.get("attendees", 1) for bk in overlaps)
+            if total_booked + attendees > capacity:
+                remaining = capacity - total_booked
+                if remaining <= 0:
+                    return f"All {capacity} spots are booked for this time slot"
+                return f"Only {remaining} spots available (requested {attendees})"
+            # Capacity available — no conflict
+        else:
+            # Exclusive resource — any overlap means conflict
+            latest_end = None
+            for bk in overlaps:
+                bk_end = bk.get("end_time")
+                if not isinstance(bk_end, datetime):
+                    bk_end = datetime.fromisoformat(bk_end)
+                bk_end = _naive(bk_end)
+                if latest_end is None or bk_end > latest_end:
+                    latest_end = bk_end
+            
+            next_available = latest_end + timedelta(minutes=BUFFER_MINUTES)
+            return f"Time slot already booked (available from {next_available.strftime('%I:%M %p')})"
+
     
     return None
 
@@ -708,6 +742,28 @@ def delete_resource(rid: str, u: Dict = Depends(require_role("admin"))):
     return {"ok": True}
 
 
+def validate_status_transition(current_status: str, new_status: str, user_role: str, is_owner: bool):
+    """Enforce strict state machine transitions for bookings."""
+    valid_transitions = {
+        "pending": ["approved", "rejected", "cancelled"],
+        "approved": ["completed", "cancelled"],
+        "rejected": [],
+        "cancelled": [],
+        "completed": []
+    }
+    
+    if new_status not in valid_transitions.get(current_status, []):
+        raise HTTPException(400, "Invalid booking status transition")
+        
+    # Authorization Rules
+    if new_status == "cancelled" or new_status == "completed":
+        if user_role == "employee" and not is_owner:
+            raise HTTPException(403, "Employees can only perform this action on their own bookings")
+            
+    if new_status in ("approved", "rejected"):
+        if user_role not in ("manager", "admin"):
+            raise HTTPException(403, "Forbidden: Only managers and admins can approve or reject")
+
 # ============ Bookings ============
 @app.post("/api/bookings/validate")
 def validate_booking(b: BookingIn, u: Dict = Depends(current_user)):
@@ -728,17 +784,25 @@ def create_booking(b: BookingIn, u: Dict = Depends(current_user)):
     if _naive(b.start_time) >= _naive(b.end_time):
         raise HTTPException(400, "Start time must be before end time")
     
-    err = detect_conflict(b.resource_id, b.start_time, b.end_time, b.attendees)
+    # Check for conflicts - only block if there's an APPROVED booking
+    # Overlapping PENDING bookings are now allowed and will be rejected later if approved
+    err = detect_conflict(b.resource_id, b.start_time, b.end_time, b.attendees, check_pending=False)
     if err:
         raise HTTPException(400, err)
+
     
     res = database.get_resource_by_id(b.resource_id)
     if not res:
         raise HTTPException(404, "Resource not found")
         
-    status_val = "pending" if res.get("requires_approval") else "approved"
-    
     u_id = u.get("id") if isinstance(u, dict) else getattr(u, "id")
+    u_role = u.get("role") if isinstance(u, dict) else getattr(u, "role")
+    
+    # Employees ALWAYS need manager approval; managers/admins auto-approve
+    if u_role == "employee":
+        status_val = "pending"
+    else:
+        status_val = "approved"
 
     # Store as IST-aware datetimes so Supabase converts to UTC correctly.
     # Do NOT strip tz here — _naive() is only for comparisons, not storage.
@@ -764,7 +828,7 @@ def create_booking(b: BookingIn, u: Dict = Depends(current_user)):
 
 
 @app.get("/api/bookings")
-def list_bookings(scope: str = "mine", u: Dict = Depends(current_user)):
+def list_bookings(scope: str = "mine", department: Optional[str] = None, u: Dict = Depends(current_user)):
     u_role = u.get("role") if isinstance(u, dict) else getattr(u, "role")
     u_id = u.get("id") if isinstance(u, dict) else getattr(u, "id")
     
@@ -775,9 +839,31 @@ def list_bookings(scope: str = "mine", u: Dict = Depends(current_user)):
         if u_role not in ("manager", "admin"):
             raise HTTPException(403, "Forbidden")
         filters["status"] = "pending"
+        # If manager (and not admin), only show bookings for their department or direct reports
+        if u_role == "manager":
+            if database.use_supabase:
+                # Use department_id for Supabase
+                dept_id = u.get("department_id")
+                if dept_id:
+                    filters["department_id"] = dept_id
+                else:
+                    filters["user_id"] = "none" # See nothing if no dept
+            else:
+                # Use department name or manager_id for SQLite
+                dept = u.get("department")
+                if dept:
+                    filters["department"] = dept
+                else:
+                    filters["manager_id"] = u_id
+
     elif scope == "all":
         if u_role != "admin":
             raise HTTPException(403, "Forbidden")
+        if department and department != "all":
+            if database.use_supabase:
+                filters["department_id"] = department
+            else:
+                filters["department"] = department
     
     bks = database.get_bookings(filters)
     return [serialize_booking(b) for b in bks]
@@ -805,26 +891,92 @@ def list_resource_bookings(rid: str, u: Dict = Depends(current_user)):
 
 
 @app.post("/api/bookings/{bid}/approve")
-def approve(bid: str, comment: str = "", u: Dict = Depends(require_role("manager", "admin"))):
+def approve(bid: str, comment: str = "", u: Dict = Depends(current_user)):
     bk = database.get_booking_by_id(bid)
     if not bk:
-        raise HTTPException(404, "Not found")
-    if bk.get("status") != "pending":
-        raise HTTPException(400, "Not pending")
+        raise HTTPException(404, "Booking not found")
+        
+    u_role = u.get("role", "employee")
+    u_id = str(u.get("id"))
+    is_owner = str(bk.get("user_id")) == u_id
+    
+    validate_status_transition(bk.get("status", "pending"), "approved", u_role, is_owner)
+    
+    # Departmental check for managers
+    u_role = u.get("role") if isinstance(u, dict) else getattr(u, "role")
+    if u_role == "manager":
+        # Get requester info
+        requester = database.get_user_by_id(bk.get("user_id"))
+        if not requester:
+            raise HTTPException(404, "Requester not found")
+            
+        if database.use_supabase:
+            if str(u.get("department_id")) != str(requester.get("department_id")):
+                raise HTTPException(403, "You can only approve bookings from your own department")
+        else:
+            if u.get("department") != requester.get("department"):
+                raise HTTPException(403, "You can only approve bookings from your own department")
+
     
     updated = database.update_booking(bid, {"status": "approved", "approver_comment": comment})
+    
+    # Auto-reject conflicting pending bookings
+    bks = database.get_bookings({"resource_id": bk.get("resource_id"), "status": "pending"})
+    s = _naive(bk.get("start_time") if isinstance(bk.get("start_time"), datetime) else datetime.fromisoformat(bk.get("start_time")))
+    e = _naive(bk.get("end_time") if isinstance(bk.get("end_time"), datetime) else datetime.fromisoformat(bk.get("end_time")))
+    BUFFER_MINUTES = 5
+    
+    for other in bks:
+        if str(other.get("id")) == str(bid):
+            continue
+        
+        other_start = other.get("start_time")
+        if not isinstance(other_start, datetime): other_start = datetime.fromisoformat(other_start)
+        other_start = _naive(other_start)
+        
+        other_end = other.get("end_time")
+        if not isinstance(other_end, datetime): other_end = datetime.fromisoformat(other_end)
+        other_end = _naive(other_end)
+        
+        # Check overlap
+        if s < (other_end + timedelta(minutes=BUFFER_MINUTES)) and e > other_start:
+            database.update_booking(other.get("id"), {
+                "status": "rejected",
+                "approver_comment": f"Auto-rejected: conflict with approved booking {bid}"
+            })
+            audit(None, u.get("id"), "auto-reject", "booking", other.get("id"), "overlap with approved")
+
     u_id = u.get("id") if isinstance(u, dict) else getattr(u, "id")
     audit(None, u_id, "approve", "booking", bid, comment)
     return serialize_booking(updated)
 
 
 @app.post("/api/bookings/{bid}/reject")
-def reject(bid: str, comment: str = "", u: Dict = Depends(require_role("manager", "admin"))):
+def reject(bid: str, comment: str = "", u: Dict = Depends(current_user)):
     bk = database.get_booking_by_id(bid)
     if not bk:
-        raise HTTPException(404, "Not found")
-    if bk.get("status") != "pending":
-        raise HTTPException(400, "Not pending")
+        raise HTTPException(404, "Booking not found")
+        
+    u_role = u.get("role", "employee")
+    u_id = str(u.get("id"))
+    is_owner = str(bk.get("user_id")) == u_id
+    
+    validate_status_transition(bk.get("status", "pending"), "rejected", u_role, is_owner)
+
+    # Departmental check for managers
+    u_role = u.get("role") if isinstance(u, dict) else getattr(u, "role")
+    if u_role == "manager":
+        # Get requester info
+        requester = database.get_user_by_id(bk.get("user_id"))
+        if not requester:
+            raise HTTPException(404, "Requester not found")
+            
+        if database.use_supabase:
+            if str(u.get("department_id")) != str(requester.get("department_id")):
+                raise HTTPException(403, "You can only reject bookings from your own department")
+        else:
+            if u.get("department") != requester.get("department"):
+                raise HTTPException(403, "You can only reject bookings from your own department")
     
     updated = database.update_booking(bid, {"status": "rejected", "approver_comment": comment})
     u_id = u.get("id") if isinstance(u, dict) else getattr(u, "id")
@@ -836,20 +988,33 @@ def reject(bid: str, comment: str = "", u: Dict = Depends(require_role("manager"
 def cancel(bid: str, u: Dict = Depends(current_user)):
     bk = database.get_booking_by_id(bid)
     if not bk:
-        raise HTTPException(404, "Not found")
+        raise HTTPException(404, "Booking not found")
     
-    u_id = u.get("id") if isinstance(u, dict) else getattr(u, "id")
-    u_role = u.get("role") if isinstance(u, dict) else getattr(u, "role")
+    u_id = str(u.get("id"))
+    u_role = u.get("role", "employee")
+    is_owner = str(bk.get("user_id")) == u_id
     
-    if str(bk.get("user_id")) != str(u_id) and u_role not in ("admin", "manager"):
-        raise HTTPException(403, "Forbidden")
-        
-    status = bk.get("status")
-    if status in ("cancelled", "rejected", "completed"):
-        raise HTTPException(400, f"Cannot cancel ({status})")
+    validate_status_transition(bk.get("status", "pending"), "cancelled", u_role, is_owner)
         
     updated = database.update_booking(bid, {"status": "cancelled"})
-    audit(None, u_id, "cancel", "booking", bid)
+    audit(None, u_id, "cancel", "booking", bid, "")
+    return serialize_booking(updated)
+
+
+@app.post("/api/bookings/{bid}/complete")
+def complete(bid: str, u: Dict = Depends(current_user)):
+    bk = database.get_booking_by_id(bid)
+    if not bk:
+        raise HTTPException(404, "Booking not found")
+        
+    u_role = u.get("role", "employee")
+    u_id = str(u.get("id"))
+    is_owner = str(bk.get("user_id")) == u_id
+    
+    validate_status_transition(bk.get("status"), "completed", u_role, is_owner)
+    
+    updated = database.update_booking(bid, {"status": "completed"})
+    audit(None, u_id, "complete", "booking", bid, "")
     return serialize_booking(updated)
 
 
@@ -862,6 +1027,9 @@ def list_maint(u: Dict = Depends(current_user)):
 @app.post("/api/maintenance")
 def create_maint(m: MaintenanceIn, u: Dict = Depends(require_role("admin"))):
     mb_data = m.model_dump()
+    # Ensure times are naive for internal consistency
+    m_start = _naive(m.start_time)
+    m_end = _naive(m.end_time)
     mb = database.create_maintenance(mb_data)
     
     # Auto-cancel overlaps
@@ -872,13 +1040,16 @@ def create_maint(m: MaintenanceIn, u: Dict = Depends(require_role("admin"))):
     for b in bks:
         b_start = b.get("start_time")
         if not isinstance(b_start, datetime): b_start = datetime.fromisoformat(b_start)
+        b_start = _naive(b_start)
+        
         b_end = b.get("end_time")
         if not isinstance(b_end, datetime): b_end = datetime.fromisoformat(b_end)
+        b_end = _naive(b_end)
         
-        if b_start < m.end_time and b_end > m.start_time:
+        if b_start < m_end and b_end > m_start:
             database.update_booking(b.get("id"), {
                 "status": "cancelled", 
-                "approver_comment": f"Auto-cancelled: maintenance ({m.reason})"
+                "approver_comment": f"auto cancelled due to maintenance. You can book this resource again from {m.end_time.strftime('%d %b, %Y %I:%M %p')}."
             })
             audit(None, u_id, "auto-cancel", "booking", b.get("id"), "maintenance overlap")
             cancelled_count += 1
@@ -918,19 +1089,59 @@ def summary(u: Dict = Depends(current_user)):
         if b_start >= now:
             upcoming += 1
             
-    by_dept = {}
+    # Fetch departments for mapping IDs to names
+    depts = database.get_departments()
+    dept_map = {str(d["id"]): d["name"] for d in depts}
+    
+    by_dept_stats = {}
     for b in database.get_bookings():
-        if b.get("status") in (["approved", "pending"]):
-            # In Supabase mode, we might need a join to get department name if it's not and-flattened
-            # For now, handle what's available
-            dep = b.get("department") or b.get("user_department") or "Unknown"
-            by_dept[dep] = by_dept.get(dep, 0) + 1
+        status = b.get("status")
+        # Get readable department name
+        dept_raw = b.get("user_department_id") or b.get("user_department") or "Unknown"
+        dept_id_str = str(dept_raw)
+        dept_name = dept_map.get(dept_id_str)
+        
+        if not dept_name:
+            # Fallback for when ID mapping fails or it's already a name
+            if dept_raw and isinstance(dept_raw, str) and "-" in dept_raw and len(dept_raw) > 20:
+                dept_name = "External/Other"
+            else:
+                dept_name = dept_raw or "General"
+        
+        # Ensure we never return a raw UUID as the name
+        if isinstance(dept_name, str) and "-" in dept_name and len(dept_name) > 20:
+            dept_name = "General"
+        
+        if dept_name not in by_dept_stats:
+            by_dept_stats[dept_name] = {
+                "name": dept_name,
+                "value": 0, # Total (for compat)
+                "total": 0,
+                "approved": 0,
+                "pending": 0,
+                "cancelled": 0,
+                "completed": 0
+            }
+        
+        stats = by_dept_stats[dept_name]
+        stats["total"] += 1
+        if status == "approved": stats["approved"] += 1
+        elif status == "pending": stats["pending"] += 1
+        elif status == "cancelled": stats["cancelled"] += 1
+        elif status == "completed": stats["completed"] += 1
+        
+        # 'value' is what the chart uses for the bar height (Approved + Pending)
+        if status in ("approved", "pending"):
+            stats["value"] += 1
             
     by_type = {}
     all_res = database.get_resources()
     for r in all_res:
-        cnt = len([bk for bk in database.get_bookings({"resource_id": r.get("id"), "status": "approved"})])
-        by_type[r.get("type")] = by_type.get(r.get("type"), 0) + cnt
+        # Include all statuses for type summary to be more meaningful
+        bks = database.get_bookings({"resource_id": r.get("id")})
+        cnt = len([bk for bk in bks if bk.get("status") in ("approved", "completed")])
+        if cnt > 0:
+            by_type[r.get("type")] = by_type.get(r.get("type"), 0) + cnt
         
     trend = []
     for i in range(6, -1, -1):
@@ -954,8 +1165,8 @@ def summary(u: Dict = Depends(current_user)):
         "active_resources": active_res,
         "upcoming": upcoming,
         "conflicts_detected": 0,
-        "by_department": [{"name": k, "value": v} for k, v in by_dept.items()],
-        "by_type": [{"name": k, "value": v} for k, v in by_type.items()],
+        "by_department": sorted(list(by_dept_stats.values()), key=lambda x: -x["value"]),
+        "by_type": [{"name": k.capitalize(), "value": v} for k, v in by_type.items()],
         "trend": trend,
     }
 
@@ -1099,8 +1310,18 @@ def availability(
 
 
 @app.get("/api/audit")
-def audit_logs(u: Dict = Depends(require_role("admin"))):
-    return database.get_audit_logs(200)
+def audit_logs(u: Dict = Depends(current_user)):
+    role = u.get("role", "employee")
+    
+    if role == "admin":
+        return database.get_audit_logs(200)
+    elif role == "manager":
+        department_id = u.get("department_id")
+        return database.get_audit_logs(200, department_id=department_id)
+    else:
+        # Employee
+        user_id = u.get("id")
+        return database.get_audit_logs(200, user_id=user_id)
 
 
 # ============ AI Function Execution ============
@@ -1493,8 +1714,8 @@ async def execute_ai_function(function_name: str, function_args: dict, user_id: 
                 return {"success": False, "error": "Not authorized"}
             
             resource_id = function_args.get("resource_id")
-            start_time = datetime.fromisoformat(function_args.get("start_time"))
-            end_time = datetime.fromisoformat(function_args.get("end_time"))
+            start_time = _naive(datetime.fromisoformat(function_args.get("start_time")))
+            end_time = _naive(datetime.fromisoformat(function_args.get("end_time")))
             reason = function_args.get("reason")
             
             maint_data = {
@@ -1505,9 +1726,29 @@ async def execute_ai_function(function_name: str, function_args: dict, user_id: 
             }
             
             maint = database.create_maintenance(maint_data)
-            audit(None, user_id, "create", "maintenance", maint.get("id"), f"AI: {reason}")
             
-            return {"success": True, "maintenance_id": maint.get("id"), "message": "Maintenance scheduled"}
+            # Auto-cancel overlaps (sync with main API)
+            bks = database.get_bookings({"resource_id": resource_id, "status": "approved"})
+            cancelled_count = 0
+            for b in bks:
+                b_start = b.get("start_time")
+                if not isinstance(b_start, datetime): b_start = datetime.fromisoformat(b_start)
+                b_start = _naive(b_start)
+                
+                b_end = b.get("end_time")
+                if not isinstance(b_end, datetime): b_end = datetime.fromisoformat(b_end)
+                b_end = _naive(b_end)
+                
+                if b_start < end_time and b_end > start_time:
+                    database.update_booking(b.get("id"), {
+                        "status": "cancelled", 
+                        "approver_comment": f"auto cancelled due to maintenance. You can book this resource again from {end_time.strftime('%d %b, %Y %I:%M %p')}."
+                    })
+                    audit(None, user_id, "auto-cancel", "booking", b.get("id"), "maintenance overlap (AI)")
+                    cancelled_count += 1
+
+            audit(None, user_id, "create", "maintenance", maint.get("id"), f"AI: {reason}")
+            return {"success": True, "maintenance_id": maint.get("id"), "message": f"Maintenance scheduled. {cancelled_count} bookings cancelled."}
         
         elif function_name == "get_analytics_summary":
             if user_role not in ("manager", "admin"):

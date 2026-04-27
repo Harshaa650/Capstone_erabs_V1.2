@@ -4,7 +4,7 @@ import { useAuth } from '../hooks/useAuth'
 import {
   LayoutDashboard, CalendarDays, Building2, ClipboardList,
   Settings, LogOut, Menu, X, Shield, Users, ChevronLeft,
-  Activity, Sparkles,
+  Activity, Sparkles, History
 } from 'lucide-react'
 
 export default function Shell({ children }) {
@@ -13,10 +13,15 @@ export default function Shell({ children }) {
   const location = useLocation()
   const navigate = useNavigate()
 
+  let auditLabel = 'My Activity'
+  if (isAdmin) auditLabel = 'Audit Logs'
+  else if (isManager) auditLabel = 'Team Activity'
+
   const navItems = [
     { icon: LayoutDashboard, label: 'Overview', path: '/dashboard', show: true },
     { icon: Building2, label: 'Resources', path: '/resources', show: true },
     { icon: CalendarDays, label: 'My Bookings', path: '/bookings', show: true },
+    { icon: History, label: auditLabel, path: '/audit', show: true },
     { icon: Activity, label: 'Analytics', path: '/analytics', show: true },
     { icon: Sparkles, label: 'AI Assistant', path: '/assistant', show: true },
     { icon: ClipboardList, label: 'Approvals', path: '/approvals', show: isManager || isAdmin },

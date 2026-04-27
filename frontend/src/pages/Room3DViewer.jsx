@@ -8,10 +8,11 @@ import { CabinRoom } from '../three-rooms/CabinRoom'
 import ManagerCabinRoom from '../three-rooms/ManagerCabinRoom'
 import ChessRoom from '../three-rooms/ChessRoom'
 import FoosballRoom from '../three-rooms/FoosballRoom'
+import ParkingLotRoom from '../three-rooms/ParkingLotRoom'
 
 /**
  * Fullscreen 3D scene viewer — designed to be embedded via <iframe>.
- * URL: /room3d?type=normal|large|medium|cabin|manager|chess|foosball
+ * URL: /room3d?type=normal|large|medium|cabin|manager|chess|foosball|parking
  */
 export default function Room3DViewer() {
   const [sp] = useSearchParams()
@@ -25,6 +26,7 @@ export default function Room3DViewer() {
       case 'manager': return <ManagerCabinRoom />
       case 'chess': return <ChessRoom />
       case 'foosball': return <FoosballRoom />
+      case 'parking': return <ParkingLotRoom />
       case 'normal':
       default: return <MeetingRoom />
     }

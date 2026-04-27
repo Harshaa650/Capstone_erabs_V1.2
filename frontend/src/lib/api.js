@@ -43,12 +43,17 @@ export const resources = {
 }
 
 export const bookings = {
-  list: (scope = 'mine') => api.get(`/bookings?scope=${scope}`),
+  list: (scope = 'mine', department = null) => {
+    let url = `/bookings?scope=${scope}`
+    if (department) url += `&department=${department}`
+    return api.get(url)
+  },
   create: (data) => api.post('/bookings', data),
   validate: (data) => api.post('/bookings/validate', data),
   approve: (id, comment = '') => api.post(`/bookings/${id}/approve?comment=${encodeURIComponent(comment)}`),
   reject: (id, comment = '') => api.post(`/bookings/${id}/reject?comment=${encodeURIComponent(comment)}`),
   cancel: (id) => api.post(`/bookings/${id}/cancel`),
+  complete: (id) => api.post(`/bookings/${id}/complete`),
 }
 
 export const maintenance = {
@@ -63,4 +68,8 @@ export const analytics = {
 
 export const audit = {
   list: () => api.get('/audit'),
+}
+
+export const departments = {
+  list: () => api.get('/departments'),
 }

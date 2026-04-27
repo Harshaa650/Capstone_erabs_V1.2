@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import toast from 'react-hot-toast'
@@ -14,6 +14,16 @@ export default function MyBookings() {
   const navigate = useNavigate()
   const [bookingList, setBookingList] = useState([])
   const [loading, setLoading] = useState(true)
+  const [sortOption, setSortOption] = useState('creationDate')
+
+  const sortedBookings = useMemo(() => {
+    const list = [...bookingList]
+    if (sortOption === 'creationDate') {
+      return list.sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+    } else {
+      return list.sort((a, b) => new Date(b.start_time) - new Date(a.start_time))
+    }
+  }, [bookingList, sortOption])
 
   useEffect(() => {
     fetchBookings()
@@ -37,6 +47,16 @@ export default function MyBookings() {
       fetchBookings()
     } catch (err) {
       toast.error(err.response?.data?.detail || 'Failed to cancel')
+    }
+  }
+
+  const handleComplete = async (id) => {
+    try {
+      await bookings.complete(id)
+      toast.success('Booking marked as completed')
+      fetchBookings()
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to complete')
     }
   }
 
@@ -97,8 +117,20 @@ export default function MyBookings() {
       </div>
 
       {/* Bookings List */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
+        <h2 className="text-xl font-bold text-white">Your Bookings</h2>
+        <select
+          value={sortOption}
+          onChange={(e) => setSortOption(e.target.value)}
+          className="bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-white text-sm focus:outline-none focus:border-brand-500"
+        >
+          <option value="creationDate" className="bg-ink-900">Sort by Creation Date</option>
+          <option value="bookingDate" className="bg-ink-900">Sort by Booking Date</option>
+        </select>
+      </div>
+
       <div className="space-y-4">
-        {bookingList.length === 0 ? (
+        {sortedBookings.length === 0 ? (
           <div className="glass-card p-16 text-center">
             <CalendarDays size={48} className="text-gray-600 mx-auto mb-4" />
             <p className="text-gray-400 text-lg">No bookings yet.</p>
@@ -110,7 +142,7 @@ export default function MyBookings() {
             </button>
           </div>
         ) : (
-          bookingList.map((bk, i) => {
+          sortedBookings.map((bk, i) => {
             const cfg = statusConfig[bk.status] || statusConfig.pending
             const StatusIcon = cfg.icon
             return (
@@ -140,6 +172,9 @@ export default function MyBookings() {
                         {fmtTime(bk.start_time)} — {fmtTime(bk.end_time)}
                         <span className="ml-1.5 text-[10px] text-brand-400/70 font-medium">IST</span>
                       </p>
+                      <p className="text-gray-500 text-xs mt-1">
+                        Booked by <span className="text-white">{bk.user_name || 'Unknown User'}</span>
+                      </p>
                       {bk.purpose && (
                         <p className="text-gray-600 text-xs mt-1">Purpose: {bk.purpose}</p>
                       )}
@@ -153,6 +188,14 @@ export default function MyBookings() {
                       <span className="text-gray-500 text-xs bg-white/5 px-2 py-1 rounded-lg">
                         {bk.attendees} attendees
                       </span>
+                    )}
+                    {bk.status === 'approved' && (
+                      <button
+                        onClick={() => handleComplete(bk.id)}
+                        className="bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 text-sm px-4 py-2 rounded-lg transition-colors border border-blue-500/20"
+                      >
+                        Complete
+                      </button>
                     )}
                     {['pending', 'approved'].includes(bk.status) && (
                       <button

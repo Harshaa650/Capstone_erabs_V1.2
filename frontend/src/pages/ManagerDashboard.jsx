@@ -28,7 +28,7 @@ export default function ManagerDashboard() {
         bookings.list('pending'),
       ])
       setSummary(s.data)
-      setPendingList(p.data)
+      setPendingList(p.data.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)))
     } catch (err) {
       toast.error('Failed to load data')
     } finally {

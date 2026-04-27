@@ -53,6 +53,12 @@ const SCENE_GALLERIES = {
     'https://images.unsplash.com/photo-1577221084712-45b0445d2b00?w=1200&q=80',
     'https://images.unsplash.com/photo-1526232761682-d26e03ac148e?w=1200&q=80',
   ],
+  parking: [
+    'https://images.unsplash.com/photo-1506521781263-d8422e82f27a?w=1200&q=80',
+    'https://images.unsplash.com/photo-1590674899484-d5640e854abe?w=1200&q=80',
+    'https://images.unsplash.com/photo-1573348722427-f1d6819fdf98?w=1200&q=80',
+    'https://images.unsplash.com/photo-1569336415962-a4bd9f69cd83?w=1200&q=80',
+  ],
 }
 
 const TYPE_FALLBACK = {

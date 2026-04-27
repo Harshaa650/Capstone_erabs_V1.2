@@ -36,7 +36,7 @@ export default function EmployeeDashboard() {
           resourcesApi.list(),
         ])
         setSummary(s.data)
-        setMyBookings(b.data.slice(0, 5))
+        setMyBookings(b.data.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, 5))
         setResourceList(r.data)
       } catch {
         toast.error('Failed to load dashboard')
@@ -190,17 +190,17 @@ export default function EmployeeDashboard() {
 
         <Swiper
           modules={[Autoplay, Navigation, Pagination]}
-          autoplay={{ delay: 3500, disableOnInteraction: false, pauseOnMouseEnter: true }}
+          autoplay={{ delay: 4000, disableOnInteraction: false, pauseOnMouseEnter: true }}
           navigation
           pagination={{ clickable: true }}
-          spaceBetween={16}
+          spaceBetween={20}
           breakpoints={{
-            0: { slidesPerView: 1 },
-            640: { slidesPerView: 2 },
-            1024: { slidesPerView: 3 },
-            1280: { slidesPerView: 3 },
+            0: { slidesPerView: 1.2 },
+            640: { slidesPerView: 2.2 },
+            1024: { slidesPerView: 3.5 },
+            1280: { slidesPerView: 5 },
           }}
-          loop
+          className="pb-12 quick-book-swiper"
         >
           {resourceList.map((res) => {
             const imgs = getGalleryFor(res)
@@ -208,35 +208,46 @@ export default function EmployeeDashboard() {
               <SwiperSlide key={res.id}>
                 <div
                   data-testid={`quick-book-${res.id}`}
-                  className="glass-card overflow-hidden hover-lift cursor-pointer group flex flex-col"
+                  className="glass-card overflow-hidden hover-lift cursor-pointer group flex flex-col h-full border border-white/5 hover:border-brand-500/50 transition-all rounded-2xl"
                   onClick={() => navigate(`/resources/${res.id}`)}
                 >
-                  {/* 5:2 landscape aspect — wide banner */}
-                  <div className="relative aspect-[5/2] bg-ink-900 flex-shrink-0">
-                    <ImageCarousel images={imgs} autoPlayInterval={2000} height="100%" showDots={false} />
-                    <div className="absolute inset-0 bg-gradient-to-t from-ink-900/70 via-transparent to-transparent pointer-events-none" />
-                    <div className="absolute top-3 right-3 bg-ink-900/80 backdrop-blur px-2.5 py-1 rounded-full text-xs text-gray-200 border border-white/10 capitalize z-10">
-                      {res.type}
-                    </div>
-                    <div className="absolute bottom-3 left-3 bg-brand-500/80 backdrop-blur px-2.5 py-1 rounded-full text-xs text-white border border-white/10 z-10 capitalize flex items-center gap-1">
-                      <Sparkles size={10} /> {res.scene_type}
+                  {/* Square Image Layout with Border Radius */}
+                  <div className="p-2">
+                    <div className="relative aspect-square bg-ink-900 rounded-xl overflow-hidden border border-white/5">
+                      <ImageCarousel images={imgs} autoPlayInterval={5000} height="100%" showDots={false} />
+                      <div className="absolute top-2 right-2 bg-ink-950/80 backdrop-blur px-2 py-0.5 rounded text-[9px] text-gray-400 border border-white/5 uppercase font-bold z-10">
+                        {res.type}
+                      </div>
                     </div>
                   </div>
-                  <div className="p-4 flex-1 flex flex-col">
-                    <h3 className="text-white font-semibold mb-1">{res.name}</h3>
-                    <p className="text-gray-500 text-xs mb-3">{res.location} · cap {res.capacity}</p>
-                    <div className="flex items-center gap-2 mb-3 flex-wrap">
+
+                  {/* Details Section Below Image */}
+                  <div className="px-4 pb-4 pt-1 flex-1 flex flex-col">
+                    <div className="flex items-start justify-between gap-2 mb-1">
+                      <h3 className="text-white text-sm font-bold truncate">{res.name}</h3>
                       {res.requires_approval && (
-                        <span className="text-amber-400 text-xs flex items-center gap-1 bg-amber-400/10 px-2 py-1 rounded-full">
-                          <Clock size={10} /> approval
+                        <span className="flex-shrink-0 text-[9px] bg-amber-500/10 text-amber-500 px-1.5 py-0.5 rounded border border-amber-500/20">
+                          Req. Appr
                         </span>
                       )}
-                      <span className="text-brand-400 text-xs bg-brand-500/10 px-2 py-1 rounded-full">
-                        {res.avail_start}:00–{res.avail_end}:00
+                    </div>
+                    
+                    <div className="flex items-center justify-between text-gray-500 text-[10px] mb-3">
+                      <span className="truncate">{res.location}</span>
+                      <span className="flex-shrink-0 bg-white/5 px-1.5 py-0.5 rounded text-gray-400">
+                        Cap: {res.capacity}
                       </span>
                     </div>
-                    <button className="mt-auto w-full bg-brand-500 hover:bg-brand-400 text-white text-sm font-medium py-2.5 rounded-lg transition-colors shadow-glow-blue">
-                      Book now
+
+                    <div className="flex items-center gap-2 mb-4">
+                      <div className="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.4)]" title="Available" />
+                      <span className="text-brand-400 text-[10px] font-semibold tracking-wide">
+                        {res.avail_start}:00 – {res.avail_end}:00
+                      </span>
+                    </div>
+
+                    <button className="mt-auto w-full bg-brand-500 hover:bg-brand-400 text-white text-[11px] font-bold py-2.5 rounded-xl transition-all shadow-glow-blue active:scale-95">
+                      Quick Book
                     </button>
                   </div>
                 </div>
