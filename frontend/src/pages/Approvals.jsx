@@ -29,7 +29,7 @@ export default function Approvals() {
   const fetchPending = async () => {
     try {
       const res = await bookings.list('pending')
-      setPendingList(res.data)
+      setPendingList(res.data.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)))
     } catch (err) {
       toast.error('Failed to load pending approvals')
     } finally {

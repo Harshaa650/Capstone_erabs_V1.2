@@ -31,6 +31,7 @@ class User(Base):
     hashed_password = Column(String)
     role = Column(String, default="employee")
     department = Column(String, default="General")
+    manager_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     bookings = relationship("Booking", back_populates="user", foreign_keys="Booking.user_id")
 
 
@@ -459,9 +460,15 @@ class Database:
     def get_bookings(self, filters: Dict = None) -> List[Dict]:
         """Get bookings with optional filters, joining with resources for name/image."""
         if self.use_supabase:
+            # Check if we need to use !inner join for filtering by joined table
+            user_join = "user:user_id"
+            if filters and ("department" in filters or "department_id" in filters or "manager_id" in filters):
+                user_join = "user:user_id!inner"
+                
             query = self.supabase.table("bookings").select(
-                "*, resource:resource_id(name, image_url, scene_type, type)"
+                f"*, resource:resource_id(name, image_url, scene_type, type), {user_join}(name, department_id, manager_id, role)"
             )
+
             
             if filters:
                 if "user_id" in filters:
@@ -470,7 +477,12 @@ class Database:
                     query = query.eq("status", filters["status"])
                 if "status_in" in filters:
                     query = query.in_("status", filters["status_in"])
+                if "department" in filters:
+                    query = query.eq("user.department_id", filters["department"])
+                if "department_id" in filters:
+                    query = query.eq("user.department_id", filters["department_id"])
             
+            query = query.order("created_at", desc=True)
             result = query.execute()
             # Flatten nested resource data
             for b in result.data:
@@ -479,6 +491,12 @@ class Database:
                     b["resource_image_url"] = b["resource"].get("image_url")
                     b["resource_scene_type"] = b["resource"].get("scene_type")
                     b["resource_type"] = b["resource"].get("type")
+                if "user" in b and b["user"]:
+                    b["user_name"] = b["user"].get("name")
+                    b["user_department"] = b["user"].get("department") or b["user"].get("department_id")
+                    b["user_department_id"] = b["user"].get("department_id")
+                    b["user_manager_id"] = b["user"].get("manager_id")
+                    b["user_role"] = b["user"].get("role")
             return result.data
         else:
             session = self.get_session()
@@ -489,7 +507,13 @@ class Database:
                     query = query.filter(Booking.user_id == filters["user_id"])
                 if "status" in filters:
                     query = query.filter(Booking.status == filters["status"])
+                if "department" in filters:
+                    query = query.join(User).filter(User.department == filters["department"])
+                elif "manager_id" in filters:
+                    query = query.join(User).filter(User.manager_id == filters["manager_id"])
+
             
+            query = query.order_by(Booking.created_at.desc())
             bookings = query.all()
             result = []
             for b in bookings:
@@ -505,6 +529,10 @@ class Database:
                     "status": b.status,
                     "approver_comment": b.approver_comment,
                     "created_at": b.created_at,
+                    "user_name": b.user.name if b.user else None,
+                    "user_department": b.user.department if b.user else None,
+                    "user_manager_id": b.user.manager_id if b.user else None,
+                    "user_role": b.user.role if b.user else None,
                     "resource_name": res.name if res else None,
                     "resource_image_url": res.image_url if res else None,
                     "resource_scene_type": res.scene_type if res else None,
@@ -656,25 +684,56 @@ class Database:
             session.commit()
             session.close()
 
-    def get_audit_logs(self, limit: int = 200) -> List[Dict]:
+    def get_audit_logs(self, limit: int = 200, user_id: Optional[str] = None, department_id: Optional[str] = None) -> List[Dict]:
         """Get audit logs."""
         if self.use_supabase:
-            result = self.supabase.table("audit_logs").select("*").order("timestamp", desc=True).limit(limit).execute()
-            return result.data
+            query = self.supabase.table("audit_logs").select("*, users!inner(name, role, department_id)")
+            if user_id:
+                query = query.eq("actor_id", user_id)
+            if department_id:
+                query = query.eq("users.department_id", department_id)
+                
+            result = query.order("timestamp", desc=True).limit(limit).execute()
+            
+            mapped_logs = []
+            for lg in result.data:
+                user_info = lg.get("users", {})
+                mapped_logs.append({
+                    "id": lg.get("id"),
+                    "user_id": lg.get("actor_id"),
+                    "user_role": user_info.get("role", "unknown"),
+                    "user_name": user_info.get("name", "Unknown"),
+                    "action": lg.get("action"),
+                    "target_id": lg.get("entity_id"),
+                    "timestamp": lg.get("timestamp"),
+                    "details": lg.get("details"),
+                    "entity": lg.get("entity")
+                })
+            return mapped_logs
         else:
             session = self.get_session()
-            logs = session.query(AuditLog).order_by(AuditLog.timestamp.desc()).limit(limit).all()
+            query = session.query(AuditLog, User).outerjoin(User, AuditLog.actor_id == User.id)
+            
+            if user_id:
+                query = query.filter(AuditLog.actor_id == user_id)
+            if department_id:
+                query = query.filter(User.department_id == department_id)
+                
+            logs = query.order_by(AuditLog.timestamp.desc()).limit(limit).all()
+            
             result = [
                 {
                     "id": lg.id,
-                    "actor_id": lg.actor_id,
+                    "user_id": lg.actor_id,
+                    "user_role": user.role if user else "unknown",
+                    "user_name": user.name if user else "Unknown",
                     "action": lg.action,
-                    "entity": lg.entity,
-                    "entity_id": lg.entity_id,
+                    "target_id": lg.entity_id,
+                    "timestamp": lg.timestamp.isoformat() if isinstance(lg.timestamp, datetime) else lg.timestamp,
                     "details": lg.details,
-                    "timestamp": lg.timestamp,
+                    "entity": lg.entity
                 }
-                for lg in logs
+                for lg, user in logs
             ]
             session.close()
             return result
